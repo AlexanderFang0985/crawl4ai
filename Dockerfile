@@ -197,4 +197,4 @@ USER appuser
 ENV PYTHON_ENV=production 
 
 # Start the application using supervisord
-CMD ["supervisord", "-c", "supervisord.conf"]
+CMD python -c "import os; import sys; sys.path.insert(0, '/app'); port = int(os.environ.get('PORT', 8080)); print(f'Starting on port {port}'); import uvicorn; from server import app; uvicorn.run(app, host='0.0.0.0', port=port)"
