@@ -253,8 +253,15 @@ class CrawlResult(BaseModel):
         requirements change, this is where you would update the logic.
         """
         result = super().model_dump(*args, **kwargs)
+
+        # Remove deprecated aliases that are now properties so serialization never leaks descriptors
+        result.pop("fit_html", None)
+        result.pop("fit_markdown", None)
+
         if self._markdown is not None:
-            result["markdown"] = self._markdown.model_dump() 
+            result["markdown"] = self._markdown.model_dump()
+        else:
+            result["markdown"] = None
         return result
 
 class StringCompatibleMarkdown(str):
@@ -375,3 +382,4 @@ class ScrapingResult(BaseModel):
     media: Media = Media()
     links: Links = Links()
     metadata: Dict[str, Any] = {}
+
