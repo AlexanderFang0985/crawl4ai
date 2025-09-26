@@ -33,6 +33,7 @@ from crawl4ai.content_filter_strategy import (
 )
 from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
 from crawl4ai.content_scraping_strategy import LXMLWebScrapingStrategy
+from crawler_pool import get_crawler, invalidate_crawler
 
 from utils import (
     TaskStatus,
@@ -422,11 +423,12 @@ async def handle_crawl_request(
     config: dict
 ) -> dict:
     """Handle non-streaming crawl requests."""
+    crawler = None
     start_mem_mb = _get_memory_mb() # <--- Get memory before
     start_time = time.time()
     mem_delta_mb = None
     peak_mem_mb = start_mem_mb
-    
+
     try:
         urls = [('https://' + url) if not url.startswith(('http://', 'https://')) and not url.startswith(("raw:", "raw://")) else url for url in urls]
         browser_config = BrowserConfig.load(browser_config)
@@ -438,8 +440,7 @@ async def handle_crawl_request(
                 base_delay=tuple(config["crawler"]["rate_limiter"]["base_delay"])
             ) if config["crawler"]["rate_limiter"]["enabled"] else None
         )
-        
-        from crawler_pool import get_crawler
+
         crawler = await get_crawler(browser_config)
 
         # crawler: AsyncWebCrawler = AsyncWebCrawler(config=browser_config)
@@ -488,12 +489,13 @@ async def handle_crawl_request(
 
     except Exception as e:
         logger.error(f"Crawl error: {str(e)}", exc_info=True)
-        if 'crawler' in locals() and crawler.ready: # Check if crawler was initialized and started
-            #  try:
-            #      await crawler.close()
-            #  except Exception as close_e:
-            #       logger.error(f"Error closing crawler during exception handling: {close_e}")
-            logger.error(f"Error closing crawler during exception handling: {str(e)}")
+
+        if crawler is not None:
+            message = str(e)
+            if "Target page, context or browser has been closed" in message:
+                await invalidate_crawler(crawler, reason="playwright closed context")
+            elif not getattr(crawler, "ready", False):
+                await invalidate_crawler(crawler, reason="crawler not ready after failure")
 
         # Measure memory even on error if possible
         end_mem_mb_error = _get_memory_mb()
@@ -516,6 +518,8 @@ async def handle_stream_crawl_request(
     config: dict
 ) -> Tuple[AsyncWebCrawler, AsyncGenerator]:
     """Handle streaming crawl requests."""
+    crawler = None
+
     try:
         browser_config = BrowserConfig.load(browser_config)
         # browser_config.verbose = True # Set to False or remove for production stress testing
@@ -531,7 +535,6 @@ async def handle_stream_crawl_request(
             )
         )
 
-        from crawler_pool import get_crawler
         crawler = await get_crawler(browser_config)
 
         # crawler = AsyncWebCrawler(config=browser_config)
@@ -546,13 +549,12 @@ async def handle_stream_crawl_request(
         return crawler, results_gen
 
     except Exception as e:
-        # Make sure to close crawler if started during an error here
-        if 'crawler' in locals() and crawler.ready:
-            #  try:
-            #       await crawler.close()
-            #  except Exception as close_e:
-            #       logger.error(f"Error closing crawler during stream setup exception: {close_e}")
-            logger.error(f"Error closing crawler during stream setup exception: {str(e)}")
+        if crawler is not None:
+            message = str(e)
+            if "Target page, context or browser has been closed" in message:
+                await invalidate_crawler(crawler, reason="playwright closed context")
+            elif not getattr(crawler, "ready", False):
+                await invalidate_crawler(crawler, reason="crawler not ready after failure")
         logger.error(f"Stream crawl error: {str(e)}", exc_info=True)
         # Raising HTTPException here will prevent streaming response
         raise HTTPException(
