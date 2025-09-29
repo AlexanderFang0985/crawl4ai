@@ -36,6 +36,18 @@ def load_config() -> Dict:
     if llm_api_key and "api_key" not in config["llm"]:
         config["llm"]["api_key"] = llm_api_key
         logging.info("LLM API key loaded from LLM_API_KEY environment variable")
+
+    # Redis URI override from environment (non-breaking)
+    # Priority: REDIS_URL > UPSTASH_REDIS_URL > REDIS_URI
+    redis_uri = (
+        os.environ.get("REDIS_URL")
+        or os.environ.get("UPSTASH_REDIS_URL")
+        or os.environ.get("REDIS_URI")
+    )
+    if redis_uri:
+        config.setdefault("redis", {})
+        config["redis"]["uri"] = redis_uri
+        logging.info("Redis URI overridden from environment variable")
     
     return config
 
