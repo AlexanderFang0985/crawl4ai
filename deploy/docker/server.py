@@ -662,6 +662,20 @@ async def debug_cgroup():
 
     return JSONResponse(data)
 
+# Small helper to inspect effective runtime config (selected fields)
+@app.get("/debug/config")
+async def debug_config():
+    try:
+        mem_thr = config.get("crawler", {}).get("memory_threshold_percent")
+        pool = config.get("crawler", {}).get("pool", {})
+        return JSONResponse({
+            "memory_threshold_percent": mem_thr,
+            "pool_max_pages": pool.get("max_pages"),
+            "global_sem_max_pages": MAX_PAGES,
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
 # attach MCP layer (adds /mcp/ws, /mcp/sse, /mcp/schema)
 print(f"MCP server running on {config['app']['host']}:{config['app']['port']}")
 attach_mcp(

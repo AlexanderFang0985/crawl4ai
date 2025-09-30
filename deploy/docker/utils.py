@@ -48,7 +48,42 @@ def load_config() -> Dict:
         config.setdefault("redis", {})
         config["redis"]["uri"] = redis_uri
         logging.info("Redis URI overridden from environment variable")
-    
+
+    # ---- Crawl4AI runtime knobs (env overrides) ----------------------------
+    # Allow tuning memory threshold and global page cap without changing code.
+    # These are read by both server.py and crawler_pool.py via load_config().
+    try:
+        mem_thr_str = os.environ.get("C4AI_MEMORY_THRESHOLD_PERCENT")
+        if mem_thr_str:
+            mem_thr = float(mem_thr_str)
+            if not (0.0 < mem_thr <= 100.0):
+                raise ValueError("C4AI_MEMORY_THRESHOLD_PERCENT must be in (0, 100]")
+            config.setdefault("crawler", {})
+            config["crawler"]["memory_threshold_percent"] = mem_thr
+            logging.info(
+                f"memory_threshold_percent overridden from env: {mem_thr}")
+    except Exception as e:
+        logging.warning(
+            f"Invalid C4AI_MEMORY_THRESHOLD_PERCENT='{os.environ.get('C4AI_MEMORY_THRESHOLD_PERCENT')}'. "
+            f"Using config.yml default. Error: {e}"
+        )
+
+    try:
+        max_pages_str = os.environ.get("C4AI_MAX_PAGES")
+        if max_pages_str:
+            max_pages = int(max_pages_str)
+            if max_pages <= 0:
+                raise ValueError("C4AI_MAX_PAGES must be positive")
+            config.setdefault("crawler", {})
+            pool = config["crawler"].setdefault("pool", {})
+            pool["max_pages"] = max_pages
+            logging.info(f"crawler.pool.max_pages overridden from env: {max_pages}")
+    except Exception as e:
+        logging.warning(
+            f"Invalid C4AI_MAX_PAGES='{os.environ.get('C4AI_MAX_PAGES')}'. "
+            f"Using config.yml default. Error: {e}"
+        )
+
     return config
 
 def setup_logging(config: Dict) -> None:
