@@ -598,6 +598,70 @@ async def get_context(
     return JSONResponse(results)
 
 
+@app.get("/debug/cgroup")
+async def debug_cgroup():
+    import os
+
+    def rd(p):
+        try:
+            return open(p).read().strip()
+        except Exception:
+            return None
+
+    data = {
+        "cgroup_version": None,
+        "limit_bytes": None,
+        "usage_bytes": None,
+        "limit_human": None,
+        "usage_human": None,
+        "raw": {},
+    }
+
+    # cgroups v2
+    if os.path.exists("/sys/fs/cgroup/memory.max"):
+        lim = rd("/sys/fs/cgroup/memory.max")
+        use = rd("/sys/fs/cgroup/memory.current")
+        data["cgroup_version"] = "v2"
+        data["raw"] = {"memory.max": lim, "memory.current": use}
+        if lim and lim != "max":
+            try:
+                limit = int(lim)
+                usage = int(use or "0")
+                data.update(
+                    limit_bytes=limit,
+                    usage_bytes=usage,
+                    limit_human=f"{limit/(1024**3):.2f} GiB",
+                    usage_human=f"{usage/(1024**3):.2f} GiB",
+                )
+            except Exception:
+                pass
+
+    # cgroups v1
+    elif os.path.exists("/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        lim = rd("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+        use = rd("/sys/fs/cgroup/memory/memory.usage_in_bytes")
+        data["cgroup_version"] = "v1"
+        data["raw"] = {
+            "memory.limit_in_bytes": lim,
+            "memory.usage_in_bytes": use,
+        }
+        try:
+            limit = int(lim)
+            usage = int(use or "0")
+            data.update(
+                limit_bytes=limit,
+                usage_bytes=usage,
+                limit_human=f"{limit/(1024**3):.2f} GiB",
+                usage_human=f"{usage/(1024**3):.2f} GiB",
+            )
+        except Exception:
+            pass
+
+    else:
+        data["cgroup_version"] = "unknown"
+
+    return JSONResponse(data)
+
 # attach MCP layer (adds /mcp/ws, /mcp/sse, /mcp/schema)
 print(f"MCP server running on {config['app']['host']}:{config['app']['port']}")
 attach_mcp(
