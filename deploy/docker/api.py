@@ -472,13 +472,25 @@ async def handle_crawl_request(
 
         # Process results to handle PDF bytes
         processed_results = []
+        playwright_closed_detected = False
         for result in results:
             result_dict = result.model_dump()
             # If PDF exists, encode it to base64
             if result_dict.get('pdf') is not None:
                 result_dict['pdf'] = b64encode(result_dict['pdf']).decode('utf-8')
+
+            if (
+                not getattr(result, "success", True)
+                and getattr(result, "error_message", None)
+                and "Target page, context or browser has been closed" in result.error_message
+            ):
+                playwright_closed_detected = True
+
             processed_results.append(result_dict)
-            
+
+        if playwright_closed_detected and crawler is not None:
+            await invalidate_crawler(crawler, reason="playwright closed context (result)")
+
         return {
             "success": True,
             "results": processed_results,
