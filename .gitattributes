@@ -4,6 +4,12 @@ docs/* linguist-documentation
 docs/examples/* linguist-documentation
 docs/md_v2/* linguist-documentation
 
+# Line endings
+* text=auto
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
 # Explicitly mark Python as the main language
 *.py linguist-detectable=true
 *.py linguist-language=Python
