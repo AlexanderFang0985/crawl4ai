@@ -10,6 +10,8 @@ nav:
   - Home: 'index.md'
   - "Ask AI": "core/ask-ai.md"
   - "Quick Start": "core/quickstart.md"
+  - Tutorials:
+    - "Python SDK": "tutorials/python-sdk.md"
   - "Code Examples": "core/examples.md"
   - Apps:
     - "Demo Apps": "apps/index.md"
