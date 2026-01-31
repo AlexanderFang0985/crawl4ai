@@ -7,7 +7,7 @@ Crawl4AI FastAPI entry‑point
 """
 
 # ── stdlib & 3rd‑party imports ───────────────────────────────
-from crawler_pool import get_crawler, close_all, janitor
+from crawler_pool import checkout_crawler, return_crawler, invalidate_crawler, close_all, janitor
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig
 from auth import create_access_token, get_token_dependency, TokenRequest
 from pydantic import BaseModel
@@ -355,10 +355,11 @@ async def generate_html(
     Use when you need sanitized HTML structures for building schemas or further processing.
     """
     validate_url_scheme(body.url, allow_raw=True)
-    from crawler_pool import get_crawler
     cfg = CrawlerRunConfig()
+    crawler = None
+    error = None
     try:
-        crawler = await get_crawler(get_default_browser_config())
+        crawler = await checkout_crawler(get_default_browser_config())
         results = await crawler.arun(url=body.url, config=cfg)
         if not results[0].success:
             raise HTTPException(500, detail=results[0].error_message or "Crawl failed")
@@ -368,7 +369,17 @@ async def generate_html(
         processed_html = preprocess_html_for_schema(raw_html)
         return JSONResponse({"html": processed_html, "url": body.url, "success": True})
     except Exception as e:
+        error = e
         raise HTTPException(500, detail=str(e))
+    finally:
+        if crawler is not None:
+            msg = str(error) if error else ""
+            if error and "Target page, context or browser has been closed" in msg:
+                await invalidate_crawler(crawler, reason="playwright closed context (html)")
+            elif not getattr(crawler, "ready", False):
+                await invalidate_crawler(crawler, reason="crawler not ready after html")
+            else:
+                await return_crawler(crawler)
 
 # Screenshot endpoint
 
@@ -387,10 +398,11 @@ async def generate_screenshot(
     Then in result instead of the screenshot you will get a path to the saved file.
     """
     validate_url_scheme(body.url)
-    from crawler_pool import get_crawler
+    crawler = None
+    error = None
     try:
         cfg = CrawlerRunConfig(screenshot=True, screenshot_wait_for=body.screenshot_wait_for)
-        crawler = await get_crawler(get_default_browser_config())
+        crawler = await checkout_crawler(get_default_browser_config())
         results = await crawler.arun(url=body.url, config=cfg)
         if not results[0].success:
             raise HTTPException(500, detail=results[0].error_message or "Crawl failed")
@@ -403,7 +415,17 @@ async def generate_screenshot(
             return {"success": True, "path": abs_path}
         return {"success": True, "screenshot": screenshot_data}
     except Exception as e:
+        error = e
         raise HTTPException(500, detail=str(e))
+    finally:
+        if crawler is not None:
+            msg = str(error) if error else ""
+            if error and "Target page, context or browser has been closed" in msg:
+                await invalidate_crawler(crawler, reason="playwright closed context (screenshot)")
+            elif not getattr(crawler, "ready", False):
+                await invalidate_crawler(crawler, reason="crawler not ready after screenshot")
+            else:
+                await return_crawler(crawler)
 
 # PDF endpoint
 
@@ -422,10 +444,11 @@ async def generate_pdf(
     Then in result instead of the PDF you will get a path to the saved file.
     """
     validate_url_scheme(body.url)
-    from crawler_pool import get_crawler
+    crawler = None
+    error = None
     try:
         cfg = CrawlerRunConfig(pdf=True)
-        crawler = await get_crawler(get_default_browser_config())
+        crawler = await checkout_crawler(get_default_browser_config())
         results = await crawler.arun(url=body.url, config=cfg)
         if not results[0].success:
             raise HTTPException(500, detail=results[0].error_message or "Crawl failed")
@@ -438,7 +461,17 @@ async def generate_pdf(
             return {"success": True, "path": abs_path}
         return {"success": True, "pdf": base64.b64encode(pdf_data).decode()}
     except Exception as e:
+        error = e
         raise HTTPException(500, detail=str(e))
+    finally:
+        if crawler is not None:
+            msg = str(error) if error else ""
+            if error and "Target page, context or browser has been closed" in msg:
+                await invalidate_crawler(crawler, reason="playwright closed context (pdf)")
+            elif not getattr(crawler, "ready", False):
+                await invalidate_crawler(crawler, reason="crawler not ready after pdf")
+            else:
+                await return_crawler(crawler)
 
 
 @app.post("/execute_js")
@@ -495,17 +528,28 @@ async def execute_js(
 
     """
     validate_url_scheme(body.url)
-    from crawler_pool import get_crawler
+    crawler = None
+    error = None
     try:
         cfg = CrawlerRunConfig(js_code=body.scripts)
-        crawler = await get_crawler(get_default_browser_config())
+        crawler = await checkout_crawler(get_default_browser_config())
         results = await crawler.arun(url=body.url, config=cfg)
         if not results[0].success:
             raise HTTPException(500, detail=results[0].error_message or "Crawl failed")
         data = results[0].model_dump()
         return JSONResponse(data)
     except Exception as e:
+        error = e
         raise HTTPException(500, detail=str(e))
+    finally:
+        if crawler is not None:
+            msg = str(error) if error else ""
+            if error and "Target page, context or browser has been closed" in msg:
+                await invalidate_crawler(crawler, reason="playwright closed context (execute_js)")
+            elif not getattr(crawler, "ready", False):
+                await invalidate_crawler(crawler, reason="crawler not ready after execute_js")
+            else:
+                await return_crawler(crawler)
 
 
 @app.get("/llm/{url:path}")
