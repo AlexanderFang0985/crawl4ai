@@ -149,14 +149,15 @@ class MonitorStats:
         recent_reqs = sum(1 for req in self.completed_requests
                          if now - req.get("end_time", 0) < 5)
 
-        # Browser counts (acquire lock to prevent race conditions)
-        from crawler_pool import PERMANENT, HOT_POOL, COLD_POOL, LOCK
-        async with LOCK:
-            browser_count = {
-                "permanent": 1 if PERMANENT else 0,
-                "hot": len(HOT_POOL),
-                "cold": len(COLD_POOL)
-            }
+        # Browser counts (pool snapshot)
+        from crawler_pool import get_pool_stats
+        pool_stats = await get_pool_stats()
+        browser_count = {
+            "total": pool_stats.get("total", 0),
+            "available": pool_stats.get("available", 0),
+            "in_use": pool_stats.get("in_use", 0),
+            "pools": len(pool_stats.get("pools", [])),
+        }
 
         self.memory_timeline.append({"time": now, "value": mem_pct})
         self.requests_timeline.append({"time": now, "value": recent_reqs})
@@ -232,17 +233,15 @@ class MonitorStats:
         # Network I/O (delta since last call)
         net = psutil.net_io_counters()
 
-        # Pool status (acquire lock to prevent race conditions)
-        from crawler_pool import PERMANENT, HOT_POOL, COLD_POOL, LOCK
-        async with LOCK:
-            # TODO: Track actual browser process memory instead of estimates
-            # These are conservative estimates based on typical Chromium usage
-            permanent_mem = 270 if PERMANENT else 0  # Estimate: ~270MB for permanent browser
-            hot_mem = len(HOT_POOL) * 180  # Estimate: ~180MB per hot pool browser
-            cold_mem = len(COLD_POOL) * 180  # Estimate: ~180MB per cold pool browser
-            permanent_active = PERMANENT is not None
-            hot_count = len(HOT_POOL)
-            cold_count = len(COLD_POOL)
+        # Pool status (snapshot)
+        from crawler_pool import get_pool_stats
+        pool_stats = await get_pool_stats()
+        total = pool_stats.get("total", 0)
+        available = pool_stats.get("available", 0)
+        in_use = pool_stats.get("in_use", 0)
+        # Conservative estimate per browser (MB)
+        est_per = 200
+        total_mem = total * est_per
 
         return {
             "container": {
@@ -253,10 +252,10 @@ class MonitorStats:
                 "uptime_seconds": int(time.time() - self.start_time)
             },
             "pool": {
-                "permanent": {"active": permanent_active, "memory_mb": permanent_mem},
-                "hot": {"count": hot_count, "memory_mb": hot_mem},
-                "cold": {"count": cold_count, "memory_mb": cold_mem},
-                "total_memory_mb": permanent_mem + hot_mem + cold_mem
+                "total": total,
+                "available": available,
+                "in_use": in_use,
+                "estimated_memory_mb": total_mem
             },
             "janitor": {
                 "next_cleanup_estimate": "adaptive",  # Would need janitor state
@@ -287,46 +286,23 @@ class MonitorStats:
 
     async def get_browser_list(self) -> List[Dict]:
         """Get detailed browser pool information."""
-        from crawler_pool import PERMANENT, HOT_POOL, COLD_POOL, LAST_USED, USAGE_COUNT, DEFAULT_CONFIG_SIG, LOCK
-
+        from crawler_pool import get_pool_stats
+        pool_stats = await get_pool_stats()
         browsers = []
         now = time.time()
-
-        # Acquire lock to prevent race conditions during iteration
-        async with LOCK:
-            if PERMANENT:
-                browsers.append({
-                    "type": "permanent",
-                    "sig": DEFAULT_CONFIG_SIG[:8] if DEFAULT_CONFIG_SIG else "unknown",
-                    "age_seconds": int(now - self.start_time),
-                    "last_used_seconds": int(now - LAST_USED.get(DEFAULT_CONFIG_SIG, now)),
-                    "memory_mb": 270,
-                    "hits": USAGE_COUNT.get(DEFAULT_CONFIG_SIG, 0),
-                    "killable": False
-                })
-
-            for sig, crawler in HOT_POOL.items():
-                browsers.append({
-                    "type": "hot",
-                    "sig": sig[:8],
-                    "age_seconds": int(now - self.start_time),  # Approximation
-                    "last_used_seconds": int(now - LAST_USED.get(sig, now)),
-                    "memory_mb": 180,  # Estimate
-                    "hits": USAGE_COUNT.get(sig, 0),
-                    "killable": True
-                })
-
-            for sig, crawler in COLD_POOL.items():
-                browsers.append({
-                    "type": "cold",
-                    "sig": sig[:8],
-                    "age_seconds": int(now - self.start_time),
-                    "last_used_seconds": int(now - LAST_USED.get(sig, now)),
-                    "memory_mb": 180,
-                    "hits": USAGE_COUNT.get(sig, 0),
-                    "killable": True
-                })
-
+        for pool in pool_stats.get("pools", []):
+            browsers.append({
+                "type": "pool",
+                "sig": pool.get("sig", "unknown"),
+                "age_seconds": int(now - self.start_time),
+                "last_used_seconds": None,
+                "memory_mb": pool.get("total", 0) * 200,
+                "hits": None,
+                "killable": True,
+                "total": pool.get("total", 0),
+                "available": pool.get("available", 0),
+                "in_use": pool.get("in_use", 0),
+            })
         return browsers
 
     def get_endpoint_stats_summary(self) -> Dict[str, Dict]:

@@ -157,6 +157,73 @@ async def get_crawler(cfg: BrowserConfig) -> AsyncWebCrawler:
     """Backward-compatible alias (checkout). Prefer checkout_crawler/return_crawler."""
     return await checkout_crawler(cfg)
 
+async def get_pool_stats() -> Dict[str, object]:
+    """Return aggregate pool stats for monitoring."""
+    total = 0
+    available = 0
+    in_use = 0
+    pools = []
+    for sig, pool in list(POOLS.items()):
+        async with pool.cond:
+            p_total = pool.total
+            p_available = len(pool.available)
+            p_in_use = len(pool.in_use)
+        total += p_total
+        available += p_available
+        in_use += p_in_use
+        pools.append({
+            "sig": sig[:8],
+            "total": p_total,
+            "available": p_available,
+            "in_use": p_in_use,
+        })
+    return {
+        "total": total,
+        "available": available,
+        "in_use": in_use,
+        "pools": pools,
+    }
+
+async def close_available(reason: str = "manual cleanup") -> int:
+    """Close only idle/available crawlers, keep in-use ones alive."""
+    closed = 0
+    for sig, pool in list(POOLS.items()):
+        to_close = []
+        async with pool.cond:
+            while pool.available:
+                crawler = pool.available.popleft()
+                pool.last_used.pop(crawler, None)
+                pool.total -= 1
+                to_close.append(crawler)
+            pool.cond.notify_all()
+        for crawler in to_close:
+            await _close_crawler(crawler, reason)
+            closed += 1
+    return closed
+
+async def kill_by_sig_prefix(sig_prefix: str) -> Dict[str, int]:
+    """Kill crawlers by config signature prefix (idle only)."""
+    killed = 0
+    in_use_hits = 0
+    for sig, pool in list(POOLS.items()):
+        if not sig.startswith(sig_prefix):
+            continue
+        to_close = []
+        async with pool.cond:
+            # Close only idle ones
+            while pool.available:
+                crawler = pool.available.popleft()
+                pool.last_used.pop(crawler, None)
+                pool.total -= 1
+                to_close.append(crawler)
+            if pool.in_use:
+                in_use_hits += len(pool.in_use)
+            pool.cond.notify_all()
+        for crawler in to_close:
+            await _close_crawler(crawler, "kill_browser")
+            killed += 1
+    return {"killed": killed, "in_use": in_use_hits}
+
 
 async def close_all():
     for sig, pool in list(POOLS.items()):
