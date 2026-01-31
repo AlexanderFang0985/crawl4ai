@@ -61,6 +61,35 @@ def _get_memory_mb():
         logger.warning(f"Could not get memory info: {e}")
         return None
 
+def _should_light_first(browser_cfg: dict) -> bool:
+    """Enable light-first only when not explicitly set by caller."""
+    flag = os.getenv("CRAWL4AI_LIGHT_FIRST", "true").lower() == "true"
+    if not flag:
+        return False
+    if "text_mode" in browser_cfg or "light_mode" in browser_cfg:
+        return False
+    return True
+
+def _extract_markdown_text(result_dict: dict) -> tuple[str, str]:
+    fit = ""
+    raw = ""
+    md = result_dict.get("markdown")
+    if isinstance(md, dict):
+        fit = md.get("fit_markdown") or ""
+        raw = md.get("raw_markdown") or ""
+    else:
+        fit = result_dict.get("fit_markdown") or ""
+        raw = result_dict.get("raw_markdown") or ""
+    return str(fit), str(raw)
+
+def _content_too_small(result_dict: dict, min_chars: int) -> bool:
+    fit, raw = _extract_markdown_text(result_dict)
+    if len(fit) >= min_chars:
+        return False
+    if len(raw) >= min_chars:
+        return False
+    return True
+
 
 async def handle_llm_qa(
     url: str,
@@ -575,7 +604,15 @@ async def handle_crawl_request(
 
     try:
         urls = [('https://' + url) if not url.startswith(('http://', 'https://')) and not url.startswith(("raw:", "raw://")) else url for url in urls]
-        browser_config = BrowserConfig.load(browser_config)
+        browser_cfg_dict = browser_config or {}
+        light_first_applied = _should_light_first(browser_cfg_dict)
+        if light_first_applied:
+            browser_cfg_dict = {
+                **browser_cfg_dict,
+                "text_mode": True,
+                "light_mode": True,
+            }
+        browser_config = BrowserConfig.load(browser_cfg_dict)
         crawler_config = CrawlerRunConfig.load(crawler_config)
 
         dispatcher = MemoryAdaptiveDispatcher(
@@ -678,6 +715,54 @@ async def handle_crawl_request(
                     "error_message": str(e)
                 })
             
+        # Optional fallback: upgrade to heavy mode if content is too small
+        if light_first_applied:
+            min_chars = int(os.getenv("CRAWL4AI_MIN_FIT_MD_CHARS", "400"))
+            fallback_targets = []
+            for idx, item in enumerate(processed_results):
+                if item.get("success") and _content_too_small(item, min_chars):
+                    url = item.get("url")
+                    if url:
+                        fallback_targets.append((idx, url))
+
+            if fallback_targets:
+                heavy_browser_config = browser_config.clone(text_mode=False, light_mode=False)
+                fallback_config = crawler_config.clone(deep_crawl_strategy=None, stream=False)
+                # Ensure full-page scan for better extraction on fallback
+                if not getattr(fallback_config, "scan_full_page", False):
+                    fallback_config = fallback_config.clone(scan_full_page=True)
+
+                fallback_crawler = None
+                fallback_error = None
+                try:
+                    fallback_crawler = await checkout_crawler(heavy_browser_config)
+                    for idx, url in fallback_targets:
+                        try:
+                            fb_result = await fallback_crawler.arun(url, config=fallback_config)
+                            if hasattr(fb_result, "model_dump"):
+                                fb_dict = fb_result.model_dump()
+                            elif isinstance(fb_result, list) and fb_result:
+                                fb_dict = fb_result[0].model_dump() if hasattr(fb_result[0], "model_dump") else fb_result[0]
+                            else:
+                                fb_dict = None
+
+                            if fb_dict:
+                                processed_results[idx] = fb_dict
+                        except Exception as e:
+                            logger.warning(f"Fallback crawl failed for {url}: {e}")
+                except Exception as e:
+                    fallback_error = e
+                    logger.warning(f"Fallback crawler error: {e}")
+                finally:
+                    if fallback_crawler is not None:
+                        msg = str(fallback_error) if fallback_error else ""
+                        if fallback_error and "Target page, context or browser has been closed" in msg:
+                            await invalidate_crawler(fallback_crawler, reason="playwright closed context (fallback)")
+                        elif not getattr(fallback_crawler, "ready", False):
+                            await invalidate_crawler(fallback_crawler, reason="crawler not ready after fallback")
+                        else:
+                            await return_crawler(fallback_crawler)
+
         response = {
             "success": True,
             "results": processed_results,
